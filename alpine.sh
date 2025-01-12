@@ -1,78 +1,42 @@
 #!/bin/sh
 
-# Check if user is root
-if [ "$(id -u)" != "0" ]; then
-    echo "Error: You must be root to run this script"
-    exit 1
+# 验证当前是否为root权限
+[ "$(id -u)" = "0" ] || { echo "Error: You must be root"; exit 1; }
+
+# 自动选择源
+rgeo=$(wget -qO- https://ipip.rehi.org/country_code || echo "FAILED")
+if [ "$rgeo" = "FAILED" ]; then
+    echo "Failed to detect country, using default mirror"
+    repo=https://dl-cdn.alpinelinux.org/alpine/latest-stable
+else
+    if [ "$rgeo" = "CN" ]; then
+        repo=https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable
+    else
+        repo=https://dl-cdn.alpinelinux.org/alpine/latest-stable
+    fi
 fi
 
-clear
-echo "+------------------------------------------------------------------------+"
-echo "|                             Alpine                                     |"
-echo "+------------------------------------------------------------------------+"
-echo "|                  A script to Net Install Alpine                        |"
-echo "+------------------------------------------------------------------------+"
-echo "|              Welcome to https://github.com/52Fancy                     |"
-echo "+------------------------------------------------------------------------+"
-
-read -p "请选择分支版本[默认latest-stable]：" branch
-branch=${branch:-latest-stable}
-echo "分支：${branch}"
-
-read -p "请选择密钥上传接口[默认file.io]：" loadKey
-loadKey=${loadKey:-https://file.io}
-echo "密钥上传接口：${loadKey}"
-
-read -p "请选择apk源[默认cdn]：" mirror
-mirror=${mirror:-https://dl-cdn.alpinelinux.org/alpine}
-echo "apk源：${mirror}"
-
-case "$(uname -m)" in
-    x86_64) arch="x86_64" ;;
-    i386|i686|x86) arch="x86" ;;
-    armv8|armv8l|aarch64|arm64) arch="aarch64" ;;
-    *) arch="$(uname -m)" ;;
-esac
+# 获取系统架构
+arch=$(uname -m)
 echo "系统平台：${arch}"
 
-read -p "是否开启VIRTUAL[y/n]：" flavor
-case "${flavor}" in
-    y|Y|yes) flavor="virt"; echo "开启VIRTUAL" ;;
-    *) flavor="lts"; echo "关闭VIRTUAL" ;;
-esac
+# 下载启动内核
+wget -q ${repo}/releases/${arch}/netboot/vmlinuz-virt -O /boot/vmlinuz-netboot || { echo "Download failed!"; exit 1; }
+wget -q ${repo}/releases/${arch}/netboot/initramfs-virt -O /boot/initramfs-netboot || { echo "Download failed!"; exit 1; }
 
-console=tty0
+# 生成ssh密钥
 yes | ssh-keygen -t ed25519 -N '' -f KEY
-if [ $? -ne 0 ]; then
-    echo "请安装OpenSSH"
-    exit 1
-fi
-ssh_key="$(curl -k -F "file=@KEY.pub" ${loadKey} | sed 's/.*"link":"//;s/".*//')"
-if [ $? -ne 0 ]; then
-    echo "请安装Curl"
-    exit 1
-fi
 
-version="$(curl -k ${mirror}/${branch}/releases/${arch}/latest-releases.yaml | grep version | sed -n 1p | sed 's/version: //g' | xargs echo -n)"
-if ! curl -k -f -# ${mirror}/${branch}/releases/${arch}/netboot/vmlinuz-${flavor} -o /boot/vmlinuz-${version}-netboot; then
-    echo "Failed to download file!"
-    exit 1
-fi
+# 上传ssh公钥，返回公钥直链，用于grub启动
+ssh_key="$(curl -k -F "file=@KEY.pub" https://file.io | sed 's/.*"link":"//;s/".*//')"
 
-if ! curl -k -f -# ${mirror}/${branch}/releases/${arch}/netboot/initramfs-${flavor} -o /boot/initramfs-${version}-netboot; then
-    echo "Failed to download file!"
-    exit 1
-fi
-
+# 创建grub启动文件
 cat > /etc/grub.d/40_custom << EOF
 #!/bin/sh
 exec tail -n +3 \$0
-# This file provides an easy way to add custom menu entries.  Simply type the
-# menu entries you want to add after this comment.  Be careful not to change
-# the 'exec tail' line above.
 menuentry 'Alpine' {
-    linux /boot/vmlinuz-${version}-netboot alpine_repo="${mirror}/${branch}/main" modloop="${mirror}/${branch}/releases/${arch}/netboot/modloop-${flavor}" modules="loop,squashfs" initrd="initramfs-${version}-netboot" console="${console}" ssh_key="${ssh_key}"
-    initrd /boot/initramfs-${version}-netboot
+    linux /boot/vmlinuz-netboot alpine_repo="${repo}/main" modloop="${repo}/releases/${arch}/netboot/modloop-virt" modules="loop,squashfs" initrd="initramfs-netboot" console=tty0 ssh_key="${ssh_key}"
+    initrd /boot/initramfs-netboot
 }
 EOF
 
@@ -88,8 +52,7 @@ else
 fi
 
 cat KEY
-echo "请自行下载或者保存私钥，然后重启服务器继续安装"
-echo "$(curl -k -F "file=@KEY" ${loadKey} | sed 's/.*"link":"//;s/".*//')"
+echo "请保存私钥，然后重启服务器继续安装"
 
 read -p "重启服务器[y/n]：" reboot
 if [ "${reboot}" = "y" ] || [ "${reboot}" = "yes" ] || [ "${reboot}" = "Y" ]; then
